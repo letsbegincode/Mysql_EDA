@@ -1,0 +1,430 @@
+USE dataset;
+
+-- Display the contents of the laptop table
+SELECT * FROM laptop;
+
+-- Describe the table to get metadata information
+SHOW TABLE STATUS LIKE 'laptop';
+/*
+Result:
+Name: laptop
+Engine: InnoDB
+Version: 10
+Row_format: Dynamic
+Rows: 1205
+Avg_row_len: 299
+Data_length: 360440
+... (additional metadata information)
+*/
+
+-- Calculate the total size taken by the table in the dataset
+SELECT 
+    table_name AS "Table",
+    ROUND(((data_length + index_length) / 1024 / 1024), 2) AS "Size (MB)"
+FROM 
+    information_schema.TABLES
+WHERE 
+    table_schema = 'dataset'
+    AND table_name = 'laptop';
+/* Result: 0.34 MB */
+
+-- Count the total number of rows in the table
+SELECT COUNT(*) FROM laptop;
+/* Result: 1224 rows */
+
+-- Remove SQL safe mode to allow deletion of rows
+SET SQL_SAFE_UPDATES = 0;
+
+-- Delete rows where all columns have empty values
+DELETE FROM dataset.laptop
+WHERE 
+    Title = '' AND
+    Rating = '' AND
+    `Rating Count and Reviews` = '' AND
+    `Current Price` = '' AND
+    `Original Price` = '' AND
+    Discount = '' AND
+    Processor = '' AND
+    `RAM Capacity` = '' AND
+    `Operating System` = '' AND
+    `SSD Capacity` = '' AND
+    `Screen Size` = '';
+/* Successfully deleted rows where all values are empty */
+
+-- Verify the number of remaining rows
+SELECT COUNT(*) FROM laptop;
+/* Result: 950 rows */
+
+-- Delete rows where Title is empty
+DELETE FROM dataset.laptop
+WHERE Title = '';
+/* Successfully deleted rows with empty Title */
+
+-- Verify the number of remaining rows
+SELECT COUNT(*) FROM laptop;
+/* Result: 912 rows */
+
+-- Rename the column for better indexing and add a new primary key
+ALTER TABLE dataset.laptop
+CHANGE COLUMN MyUnknownColumn id INT;
+ALTER TABLE dataset.laptop
+ADD COLUMN new_id INT AUTO_INCREMENT PRIMARY KEY AFTER id;
+ALTER TABLE dataset.laptop
+DROP id;
+ALTER TABLE dataset.laptop
+CHANGE COLUMN new_id id INT;
+-- ALTER TABLE dataset.laptop
+-- ADD PRIMARY KEY (id);
+
+-- Verify the row count and maximum id value
+SELECT COUNT(*) FROM dataset.laptop;
+SELECT MAX(id) FROM dataset.laptop;
+/* Both results should show 912 rows */
+
+-- Add a new column for brand names and populate it from the Title column
+ALTER TABLE dataset.laptop
+ADD COLUMN brand_name VARCHAR(255) AFTER id;
+UPDATE dataset.laptop
+SET brand_name = SUBSTRING_INDEX(Title, ' ', 1);
+
+-- Get a unique count of each brand
+SELECT brand_name, COUNT(*) AS count
+FROM dataset.laptop
+GROUP BY brand_name;
+/* Found some unexpected names like 'colorful', 'axl', 'microsoft', 'primebook' */
+
+-- Update the Rating column to replace empty values with 0
+UPDATE dataset.laptop
+SET Rating = '0'
+WHERE Rating = '' OR Rating IS NULL;
+
+-- Change the datatype of the Rating column to FLOAT
+ALTER TABLE dataset.laptop
+MODIFY COLUMN Rating FLOAT;
+
+-- Add new columns for rating count and reviews, and populate them
+ALTER TABLE dataset.laptop
+ADD COLUMN rating_count INT AFTER Rating,
+ADD COLUMN reviews INT AFTER rating_count;
+
+UPDATE dataset.laptop
+SET `Rating Count and Reviews` = '0 Ratings&0 Reviews'
+WHERE `Rating Count and Reviews` IS NULL OR TRIM(`Rating Count and Reviews`) = '';
+
+UPDATE dataset.laptop
+SET rating_count = 
+    CASE
+        WHEN TRIM(REPLACE(`Rating Count and Reviews`, ',', '')) = '' THEN 0
+        ELSE CAST(
+            SUBSTRING_INDEX(
+                SUBSTRING_INDEX(REPLACE(`Rating Count and Reviews`, ',', ''), ' Ratings&', 1),
+                ' ', -1
+            ) AS UNSIGNED
+        )
+    END,
+    reviews = 
+    CASE
+        WHEN TRIM(REPLACE(`Rating Count and Reviews`, ',', '')) = '' THEN 0
+        ELSE CAST(
+            SUBSTRING_INDEX(
+                REPLACE(REPLACE(`Rating Count and Reviews`, ',', ''), ' Ratings&', ''),
+                ' Reviews', 1
+            ) AS UNSIGNED
+        )
+    END;
+
+ALTER TABLE dataset.laptop
+DROP COLUMN `Rating Count and Reviews`;
+
+-- Add columns for cleaned current price and original price
+ALTER TABLE dataset.laptop
+ADD COLUMN cleaned_current_price INT DEFAULT 0 AFTER reviews,
+ADD COLUMN cleaned_original_price INT DEFAULT 0 AFTER cleaned_current_price;
+
+-- Update the price columns by removing currency symbols and commas, and casting to INT
+UPDATE dataset.laptop
+SET cleaned_current_price = 
+    CASE
+        WHEN `Current Price` IS NULL OR TRIM(REPLACE(`Current Price`, '₹', '')) = '' THEN 0
+        ELSE CAST(
+            REPLACE(
+                REPLACE(
+                    REPLACE(`Current Price`, '₹', ''), -- Remove ₹ symbol
+                    'â‚¹', ''                         -- Remove â‚¹ symbol if present
+                ), 
+                ',', ''                               -- Remove commas
+            ) AS UNSIGNED
+        )
+    END,
+    cleaned_original_price = 
+    CASE
+        WHEN `Original Price` IS NULL OR TRIM(REPLACE(`Original Price`, '₹', '')) = '' THEN 0
+        ELSE CAST(
+            REPLACE(
+                REPLACE(
+                    REPLACE(`Original Price`, '₹', ''), -- Remove ₹ symbol
+                    'â‚¹', ''                           -- Remove â‚¹ symbol if present
+                ),
+                ',', ''                                 -- Remove commas
+            ) AS UNSIGNED
+        )
+    END;
+
+-- Drop the original price columns and rename the cleaned columns
+ALTER TABLE dataset.laptop
+DROP COLUMN `Current Price`,
+DROP COLUMN `Original Price`;
+ALTER TABLE dataset.laptop
+CHANGE COLUMN cleaned_current_price `Current Price` INT,
+CHANGE COLUMN cleaned_original_price `Original Price` INT;
+
+-- Update the Discount column by removing non-numeric characters and converting to INT
+UPDATE dataset.laptop
+SET Discount = '0'
+WHERE Discount IS NULL OR TRIM(Discount) = '';
+
+UPDATE dataset.laptop
+SET Discount = 
+    CASE
+        WHEN TRIM(REPLACE(Discount, ' ', '')) = '' THEN '0'
+        ELSE CAST(
+            SUBSTRING_INDEX(
+                REPLACE(REPLACE(REPLACE(Discount, '%', ''), ' off', ''), ',', ''), -- Remove percentage, 'off', and commas
+                ' ', 1 -- Extract the first part before any spaces
+            ) AS UNSIGNED
+        )
+    END;
+
+-- Clean the RAM Capacity column and update values
+UPDATE dataset.laptop
+SET `RAM Capacity` = '0'
+WHERE `RAM Capacity` NOT REGEXP '^[0-9]+ GB (DDR[4-5]|LPDDR[3-5]|Unified Memory) RAM$'
+OR TRIM(`RAM Capacity`) = '';
+
+UPDATE dataset.laptop
+SET `RAM Capacity` = 
+    CASE
+        WHEN TRIM(REPLACE(`RAM Capacity`, ' ', '')) = '' THEN '0'
+        ELSE CAST(
+            REGEXP_REPLACE(
+                `RAM Capacity`,
+                '[^0-9]',   -- Remove all non-numeric characters
+                ''
+            ) AS UNSIGNED
+        )
+    END;
+
+-- Fix any misupdates in the RAM Capacity column
+UPDATE dataset.laptop
+SET `RAM Capacity` = CAST(SUBSTRING(`RAM Capacity`, 1, LENGTH(`RAM Capacity`) - 1) AS UNSIGNED)
+WHERE `RAM Capacity` REGEXP '^[0-9]+$' AND LENGTH(`RAM Capacity`) > 1;
+
+-- Rename the RAM Capacity column to ram_capacity
+ALTER TABLE dataset.laptop
+CHANGE COLUMN `RAM Capacity` ram_capacity INT;
+
+-- Clean and update the SSD Capacity column
+ALTER TABLE dataset.laptop
+CHANGE COLUMN `SSD Capacity` StorageCapacity VARCHAR(255);
+
+UPDATE dataset.laptop
+SET StorageCapacity = 
+    CASE
+        WHEN StorageCapacity LIKE '%TB%' THEN CONCAT(CAST(SUBSTRING_INDEX(StorageCapacity, ' ', 1) * 1024 AS UNSIGNED), ' GB')
+        WHEN StorageCapacity LIKE '%HDD%' THEN REPLACE(StorageCapacity, 'HDD', 'GB')
+        WHEN StorageCapacity LIKE '%SSD%' THEN REPLACE(REPLACE(StorageCapacity, ' SSD', ''), ' ', '') 
+        ELSE 'Unknown'
+    END
+WHERE StorageCapacity IS NOT NULL;
+
+UPDATE dataset.laptop
+SET StorageCapacity = TRIM(TRAILING 'GB' FROM StorageCapacity)
+WHERE StorageCapacity LIKE '%GB';
+
+-- Clean and update the Operating System column
+UPDATE dataset.laptop
+SET `Operating System` = 
+    CASE
+        WHEN `Operating System` LIKE '%Windows 10%' THEN 'Windows 10'
+        WHEN `Operating System` LIKE '%Windows 11%' THEN 'Windows 11'
+        WHEN `Operating System` LIKE '%macOS%' THEN 'macOS'
+        WHEN `Operating System` LIKE '%Linux%' THEN 'Linux'
+        ELSE 'Unknown'
+    END
+WHERE `Operating System` IS NOT NULL;
+
+-- Additional EDA: Filtering and analysis
+
+select * from laptop;
+
+-- Filter laptops with rating greater than or equal to 4
+SELECT * FROM dataset.laptop
+WHERE Rating >= 4;
+
+-- Filter laptops with more than 100 reviews
+SELECT * FROM dataset.laptop
+WHERE reviews > 100;
+
+-- Filter laptops with current price less than or equal to 50000
+SELECT * FROM dataset.laptop
+WHERE `Current Price` <= 50000;
+
+-- Filter laptops with RAM capacity of 8GB or more
+SELECT * FROM dataset.laptop
+WHERE ram_capacity >= 8;
+
+-- Filter laptops with SSD storage of 256GB or more
+SELECT * FROM dataset.laptop
+WHERE StorageCapacity >= 256;
+
+-- Filter laptops with discount of 20% or more
+SELECT * FROM dataset.laptop
+WHERE Discount >= 20;
+
+-- Filter laptops running Windows 10 or Windows 11
+SELECT * FROM dataset.laptop
+WHERE `Operating System` IN ('Windows 10', 'Windows 11');
+
+-- Filter laptops by brand name (e.g., 'Dell', 'HP', 'Apple')
+SELECT * FROM dataset.laptop
+WHERE brand_name IN ('Dell', 'HP', 'Apple');
+
+-- Summary statistics for numeric columns
+SELECT 
+    AVG(Rating) AS avg_rating,
+    AVG(rating_count) AS avg_rating_count,
+    AVG(reviews) AS avg_reviews,
+    AVG(`Current Price`) AS avg_current_price,
+    AVG(`Original Price`) AS avg_original_price,
+    AVG(Discount) AS avg_discount,
+    AVG(ram_capacity) AS avg_ram_capacity,
+    AVG(StorageCapacity) AS avg_storage_capacity
+FROM dataset.laptop;
+
+-- Distribution of brands
+SELECT brand_name, COUNT(*) AS count
+FROM dataset.laptop
+GROUP BY brand_name
+ORDER BY count DESC;
+
+-- Distribution of operating systems
+SELECT `Operating System`, COUNT(*) AS count
+FROM dataset.laptop
+GROUP BY `Operating System`
+ORDER BY count DESC;
+
+-- Distribution of RAM capacity
+SELECT ram_capacity, COUNT(*) AS count
+FROM dataset.laptop
+GROUP BY ram_capacity
+ORDER BY ram_capacity DESC;
+
+-- Distribution of SSD capacity
+SELECT StorageCapacity, COUNT(*) AS count
+FROM dataset.laptop
+GROUP BY StorageCapacity
+ORDER BY StorageCapacity DESC;
+
+
+-- Update the StorageCapacity column where it contains '512 GB GB|512 GB SSD'
+UPDATE dataset.laptop
+SET StorageCapacity = '512'
+WHERE StorageCapacity = '512 GB GB|512 GB SSD';
+
+
+select * from laptop where StorageCapacity= '512 GB GB|512 GB SSD'
+;
+
+-- Update the Operating System column in the laptop table
+UPDATE dataset.laptop AS l
+JOIN (
+    SELECT DISTINCT
+        Title,
+        CASE
+            WHEN Title LIKE '%Windows 11%' THEN 'Windows 11'
+            WHEN Title LIKE '%Windows 10%' THEN 'Windows 10'
+            WHEN Title LIKE '%Windows%' THEN 'Windows'
+            WHEN Title LIKE '%macOS%' THEN 'macOS'
+            WHEN Title LIKE '%Linux%' THEN 'Linux'
+            WHEN Title LIKE '%Chrome%' THEN 'Chrome OS'
+            WHEN Title LIKE '%Android%' THEN 'Android'
+            WHEN Title LIKE '%DOS%' THEN 'DOS'
+            ELSE 'Unknown'
+        END AS `Operating System`
+    FROM raw_laptop_dataset
+) AS r
+ON l.Title = r.Title
+SET l.`Operating System` = r.`Operating System`
+WHERE l.`Operating System` IS NULL OR l.`Operating System` = 'Unknown';
+
+-- update `Screen Size` colm
+
+-- Update screen size to remove unnecessary descriptors and handle unknown formats
+UPDATE dataset.laptop
+SET `Screen Size` = 
+    CASE
+        -- For entries with both cm and inch, keep both
+        WHEN `Screen Size` LIKE '%cm (% cm) Display%' THEN 
+            TRIM(SUBSTRING_INDEX(`Screen Size`, ' Display', 1))
+        
+        -- For entries with Touchscreen, keep 'Touchscreen' at the end
+        WHEN `Screen Size` LIKE '%Touchscreen Display%' THEN 
+            CONCAT(TRIM(SUBSTRING_INDEX(`Screen Size`, ' Touchscreen Display', 1)), ' Touchscreen')
+
+        -- For entries with only cm and inch, retain the size and units
+        WHEN `Screen Size` LIKE '%cm (% Inch) Display%' THEN 
+            TRIM(SUBSTRING_INDEX(`Screen Size`, ' Display', 1))
+
+        -- Default case for any other format
+        ELSE 'Unknown'
+    END
+WHERE `Screen Size` LIKE '%cm (% Inch) Display%' 
+   OR `Screen Size` LIKE '%cm (% cm) Display%' 
+   OR `Screen Size` LIKE '%Touchscreen Display%';
+   
+   -- Update entries containing 'Warranty' to 'Unknown'
+select `Screen Size` , count(*) from laptop
+group by `Screen Size`;
+
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%degree%';
+   
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%Warranty%';
+
+-- Update entries containing 'Processor' to 'Unknown'
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%Processor%';
+
+-- Update entries containing 'Active Pen' to 'Unknown'
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%System%';
+
+-- Update entries containing 'Ports' to 'Unknown'
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%Ports%';
+
+-- Update entries containing 'SSD' to 'Unknown'
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%SSD%';
+
+-- Update entries containing 'RAM' to 'Unknown'
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%RAM%';
+
+-- Update entries containing 'In-built' to 'Unknown'
+UPDATE dataset.laptop
+SET `Screen Size` = 'Unknown'
+WHERE `Screen Size` LIKE '%In-built%';
+
+
+select * from laptop;
+
+
